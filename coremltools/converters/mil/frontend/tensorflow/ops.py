@@ -1972,6 +1972,73 @@ def Pad(context, node):
 
 @register_tf_op
 def PadV2(context, node):
+    x = context[node.inputs[0]]
+    pad = context[node.inputs[1]]
+    constant_val = context[node.inputs[2]]
+
+    if constant_val.shape != ():
+        raise NotImplementedError("TF `constant_values` in PadV2 must be const scalar.")
+
+    # For practical reasons, Core ML doesn't like rank > 5 in pad
+    in_rank = x.rank
+    if in_rank > 5:
+        raise ValueError("Unsupported Pad configuration (rank > 5)!")
+
+    # Process the 'pad' input
+    # If we don't have a constant array for 'pad' at conversion time,
+    # we reshape it to a 1D array. Otherwise just store it as a 1D numpy array.
+    if pad.val is None:
+        pad = mb.reshape(x=pad, shape=[-1])
+    else:
+        pad = pad.val.reshape(-1)
+
+    # Convert the constant_val to a Python scalar
+    cval = constant_val.val
+
+    # Handle special infinities
+    if cval == -_np.inf:
+        INT_MIN = -_np.iinfo(_np.int64).max - 1
+        cval = float(INT_MIN)
+    elif cval == _np.inf:
+        INT_MAX = _np.iinfo(_np.int64).max
+        cval = float(INT_MAX)
+
+    # If cval is still int, make it float
+    if isinstance(cval, (int, _np.integer)):
+        cval = float(cval)
+
+    # -------------------------
+    # Force x to float if it's int
+    # -------------------------
+    if types.is_int(x.sym_type):
+        # Typical use-case: cast x to float32 for NN layers
+        x = mb.cast(x=x, dtype="fp32")
+
+    # (Your existing logic for shape checks, rank checks, etc. would go here)
+    
+    # 1) Cast x to fp32 (intermediate name)
+    x = mb.cast(x=x, dtype="fp32", name=node.name + "_fp32")
+
+    # 2) Cast constant_val to fp32 (intermediate name)
+    cval = mb.cast(x=constant_val, dtype="fp32", name=node.name + "_cval_fp32")
+
+    # 3) Perform pad (intermediate name)
+    x = mb.pad(
+        x=x,
+        pad=pad,
+        mode="constant",
+        constant_val=cval,
+        name=node.name + "_pad"
+    )
+
+    # 4) Cast back to int32 for final output
+    #    The final op must have the same name as node.name 
+    x = mb.cast(x=x, dtype="int32", name=node.name)
+
+    # 5) Add to context with the same name
+    context.add(node.name, x)
+"""
+def PadV2(context, node):
     # compared to tf.raw_ops.Pad, tf.raw_ops.PadV2 allow constant values rather than 0.
     x = context[node.inputs[0]]
     pad = context[node.inputs[1]]
@@ -2001,7 +2068,7 @@ def PadV2(context, node):
 
     x = mb.pad(x=x, pad=pad, name=node.name, mode="constant", constant_val=constant_val)
     context.add(node.name, x)
-
+"""
 
 @register_tf_op
 def Relu(context, node):
